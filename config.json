@@ -1,0 +1,30 @@
+{
+  "site": "leetcode-cn",
+  "filters": {
+    "difficulty": ["EASY", "MEDIUM", "HARD"],
+    "tags": [],
+    "limit": 10
+  },
+  "strategy": {
+    "name": "min_complexity_first",
+    "notes": "优先给出可通过且复杂度尽量低的方案，必要时给出权衡"
+  },
+  "workspace": {
+    "plans_dir": "plans",
+    "solutions_dir": "solutions",
+    "tests_dir": "tests",
+    "logs_dir": "logs"
+  },
+  "runner": {
+    "require_confirm_before_open": true,
+    "require_confirm_before_paste": true
+  },
+  "ai": {
+    "model": "gpt-5.3",
+    "budget": {
+      "max_calls": 20,
+      "max_input_tokens": 200000,
+      "max_output_tokens": 200000
+    }
+  }
+}

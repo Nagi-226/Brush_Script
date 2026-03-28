@@ -1,0 +1,9 @@
+{
+  "max_calls": 20,
+  "max_input_tokens": 200000,
+  "max_output_tokens": 200000,
+  "used_calls": 0,
+  "used_input_tokens": 0,
+  "used_output_tokens": 0,
+  "updated_at": "2026-03-28T21:31:44"
+}
