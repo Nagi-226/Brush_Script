@@ -174,4 +174,77 @@ if st.button(t("一键生成 AI 参考最优解", "One-click Generate AI Best So
                     st.session_state.estimate_ready = False
 
 st.markdown("---")
+st.subheader(t("模拟大厂技术面试评估", "Mock Big Tech Interview Evaluation", ui_lang))
+st.caption(t(
+    "上传你的代码，获取模拟真实大厂技术面试的通过/不通过判定与详细反馈。",
+    "Upload your code to get a PASS/FAIL decision with detailed feedback simulating real tech company interviews.",
+    ui_lang
+))
+
+with st.expander(t("评估说明", "Evaluation Notes", ui_lang), expanded=False):
+    st.markdown(t("""
+    - **评估标准**：基于 Google、Amazon、Meta、Microsoft 等公司的真实面试评分卡
+    - **考核维度**：算法正确性、时间复杂度、空间复杂度、代码可读性、边界情况处理、代码风格
+    - **判定结果**：明确给出 PASS（通过）或 FAIL（不通过）决定，并附有详细理由
+    - **反馈格式**：结构化评分 + 优缺点分析 + 改进建议 + 面试官模拟评论
+    """, """
+    - **Evaluation Criteria**: Based on real interview rubrics from Google, Amazon, Meta, Microsoft, etc.
+    - **Dimensions**: Algorithm correctness, time complexity, space complexity, code readability, edge case handling, code style
+    - **Decision**: Clear PASS or FAIL decision with detailed justification
+    - **Feedback Format**: Structured scores + strengths/weaknesses + improvement suggestions + interviewer comments
+    """, ui_lang))
+
+col1, col2 = st.columns(2)
+with col1:
+    eval_slug = st.text_input(t("题目 Slug", "Problem Slug", ui_lang), placeholder="two-sum", help="题目的唯一标识，如 two-sum")
+    eval_lang = st.selectbox(t("代码语言", "Code Language", ui_lang), ["python3", "cpp", "java"], index=0)
+with col2:
+    eval_code = st.text_area(t("你的代码", "Your Code", ui_lang), height=200, 
+                             placeholder="def solve(...):\n    # 你的代码...", 
+                             help="粘贴你的完整解决方案代码")
+
+if st.button(t("运行面试评估", "Run Interview Evaluation", ui_lang), type="secondary"):
+    if not eval_slug.strip():
+        st.error(t("请输入题目 Slug", "Please enter problem slug", ui_lang))
+    elif not eval_code.strip():
+        st.error(t("请输入你的代码", "Please enter your code", ui_lang))
+    else:
+        # 创建临时文件保存代码
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+            f.write(eval_code)
+            tmp_path = f.name
+        
+        try:
+            # 构建命令
+            cmd = [
+                "python",
+                "main.py",
+                "ai-interview-eval",
+                "--code",
+                tmp_path,
+                "--slug",
+                eval_slug.strip(),
+                "--lang",
+                eval_lang,
+            ]
+            # 使用侧边栏的 API 配置
+            if api_key.strip():
+                cmd.extend(["--api-key", api_key.strip()])
+            if model.strip():
+                cmd.extend(["--model", model.strip()])
+            
+            with st.spinner(t("AI 面试官评估中...", "AI interviewer evaluating...", ui_lang)):
+                output = run_cmd(cmd)
+                if "Traceback" in output or "RuntimeError" in output:
+                    st.error(t("评估失败", "Evaluation failed", ui_lang))
+                    st.code(output)
+                else:
+                    st.success(t("评估完成", "Evaluation completed", ui_lang))
+                    st.markdown(output)
+        finally:
+            os.unlink(tmp_path)
+
+st.markdown("---")
 st.caption(t("启动方式：streamlit run app.py", "Start web UI with: streamlit run app.py", ui_lang))

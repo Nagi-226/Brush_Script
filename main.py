@@ -167,17 +167,74 @@ class OpenAIClient:
         self.api_key = api_key
         self.model = model
 
-    def generate_best_solution(self, detail: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    def generate_best_solution(self, detail: Dict[str, Any], lang: str, compare: bool = False) -> Dict[str, Any]:
         content = detail.get("translatedContent") or detail.get("content") or ""
         samples = detail.get("sampleTestCase") or ""
         tags = ", ".join([t.get("slug", "") for t in (detail.get("topicTags") or []) if t.get("slug")])
 
-        system_prompt = (
-            "You are an algorithm mentor. Return a minimum-time-complexity-first reference solution "
-            "for learning. Be concise and accurate."
-        )
+        if compare:
+            system_prompt = (
+                "You are an algorithm interview coach. Provide 2-3 feasible solutions with comparison "
+                "focusing on time/space complexity, implementation difficulty, and interview suitability. "
+                "Be concise and accurate."
+            )
+            user_prompt = f"""
+Problem: {detail.get('translatedTitle') or detail.get('title')}
+Slug: {detail.get('titleSlug')}
+Difficulty: {detail.get('difficulty')}
+Tags: {tags}
+Language target: {lang}
 
-        user_prompt = f"""
+Problem statement (may contain HTML):
+{content}
+
+Sample test case text:
+{samples}
+
+Required output sections in markdown:
+## 1. Solution Comparison Table
+Present 2-3 different approaches in a table with columns:
+- Approach (brief name)
+- Time Complexity (best/average/worst)
+- Space Complexity
+- Implementation Difficulty (Low/Medium/High)
+- Interview Recommendation (1-5 stars)
+- When to choose (short scenario)
+
+## 2. Detailed Analysis
+For each approach:
+- Core idea
+- Step-by-step reasoning
+- Why this time/space complexity is optimal (or lower bound)
+- Key trade-offs
+
+## 3. Recommended Solution for Interview
+Select the most appropriate solution for interview context and explain:
+- Why it's preferred (balance of complexity, readability, interview frequency)
+- Common pitfalls to avoid
+- How to derive it during an interview
+
+## 4. Edge Cases Checklist
+- List 5-7 most common edge cases and mistakes
+
+## 5. Reference Implementation ({lang})
+- Clean, production-ready code for the recommended solution
+- Include comments for key steps
+
+## 6. Custom Test Cases
+- 3 custom tests covering typical and edge scenarios
+
+Important:
+- Focus on interview context: what candidates are expected to explain.
+- If multiple approaches have same time complexity, compare readability and corner case handling.
+- Provide honest trade-offs, not just the theoretically optimal one.
+"""
+        else:
+            system_prompt = (
+                "You are an algorithm mentor. Return a minimum-time-complexity-first reference solution "
+                "for learning. Be concise and accurate."
+            )
+            user_prompt = f"""
 Problem: {detail.get('translatedTitle') or detail.get('title')}
 Slug: {detail.get('titleSlug')}
 Difficulty: {detail.get('difficulty')}
@@ -346,7 +403,23 @@ def write_simple_files(cfg: Dict[str, Any], problem: Problem, lang: str, prefix:
     sol = Path(ws["solutions_dir"]) / f"{prefix}{base}.py"
     test = Path(ws["tests_dir"]) / f"test_{prefix}{base}.py"
 
-    plan.write_text(f"# {problem.frontend_id}. {problem.title}\n\n- slug: {problem.title_slug}\n", encoding="utf-8")
+    # Load template if available
+    template_content = ""
+    template_path = Path("templates.json")
+    if template_path.exists():
+        try:
+            import json
+            with open(template_path, "r", encoding="utf-8") as f:
+                templates = json.load(f)
+            # Find first matching tag
+            for tag in problem.topic_tags:
+                if tag in templates:
+                    template_content = "\n\n" + templates[tag]
+                    break
+        except Exception:
+            pass  # Silently ignore template errors
+    
+    plan.write_text(f"# {problem.frontend_id}. {problem.title}\n\n- slug: {problem.title_slug}\n{template_content}", encoding="utf-8")
     sol.write_text(
         textwrap.dedent(
             f"""\
@@ -447,7 +520,7 @@ def budget_check(budget: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def estimate_tokens_for_prompt(problem_detail: Dict[str, Any]) -> Dict[str, int]:
+def estimate_tokens_for_prompt(problem_detail: Dict[str, Any], compare: bool = False) -> Dict[str, int]:
     content = (problem_detail.get("translatedContent") or problem_detail.get("content") or "")
     samples = (problem_detail.get("sampleTestCase") or "")
     title = f"{problem_detail.get('title', '')} {problem_detail.get('translatedTitle', '')}"
@@ -455,6 +528,9 @@ def estimate_tokens_for_prompt(problem_detail: Dict[str, Any]) -> Dict[str, int]
     # rough estimate: 1 token ~= 4 chars for mixed text/code
     est_input = max(500, len(raw_text) // 4 + 300)
     est_output = 1600
+    if compare:
+        # Multi-solution comparison requires more output
+        est_output = int(est_output * 1.5)  # ~2400 tokens
     return {"input_tokens": est_input, "output_tokens": est_output}
 
 
@@ -519,6 +595,8 @@ def main() -> None:
             "recommend",
             "fallback-solve",
             "ai-fallback",
+            "ai-feedback",
+            "ai-interview-eval",
             "set-ai-budget",
             "show-ai-budget",
             "estimate-ai-fallback",
@@ -538,6 +616,9 @@ def main() -> None:
     parser.add_argument("--cause", default="")
     parser.add_argument("--ui-lang", default=None)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--compare", action="store_true", help="output multiple solutions comparison for interview training")
+    parser.add_argument("--code", default=None, help="path to user's code file for feedback")
+    parser.add_argument("--slug", default=None, help="problem title slug (e.g., two-sum)")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-calls", type=int, default=None)
@@ -562,6 +643,243 @@ def main() -> None:
             },
         )
         console.print(tr(f"[green]日志已写入：{path}[/green]", f"[green]Log appended: {path}[/green]", ui_lang))
+        return
+
+    if args.command == "ai-feedback":
+        if not args.code or not args.slug:
+            raise RuntimeError("Both --code and --slug are required for ai-feedback")
+        # Load user code
+        code_path = Path(args.code)
+        if not code_path.exists():
+            raise RuntimeError(f"Code file not found: {code_path}")
+        user_code = code_path.read_text(encoding="utf-8").strip()
+        
+        # Fetch problem detail
+        cookie = os.getenv("LEETCODE_COOKIE", "").strip()
+        if not cookie:
+            raise RuntimeError(tr("未检测到 LEETCODE_COOKIE", "LEETCODE_COOKIE is missing", ui_lang))
+        client = LeetCodeClient(cookie)
+        detail = client.fetch_problem_detail(args.slug)
+        
+        # Prepare AI feedback prompt
+        api_key = (args.api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is missing. Set env or pass --api-key")
+        model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
+        
+        system_prompt = (
+            "You are an algorithm interview coach. The user has written code for a problem but it contains errors. "
+            "Your task is to identify the **most critical logical error** and provide a **direction for correction**, "
+            "without giving the full correct code. Be concise and focus on the core misunderstanding."
+        )
+        user_prompt = f"""
+Problem: {detail.get('translatedTitle') or detail.get('title')}
+Slug: {detail.get('titleSlug')}
+Difficulty: {detail.get('difficulty')}
+Tags: {', '.join([t.get('slug', '') for t in (detail.get('topicTags') or []) if t.get('slug')])}
+
+Problem statement (may contain HTML):
+{detail.get('translatedContent') or detail.get('content') or ''}
+
+User's code:
+```{args.lang or 'python3'}
+{user_code}
+```
+
+Provide feedback in the following format:
+## 1. Critical Error
+- Identify the single most important logical error (e.g., off-by-one, missing base case, incorrect algorithm choice)
+- Explain why it's wrong (refer to problem constraints or examples)
+
+## 2. Correction Direction
+- Suggest **one concrete step** to fix the error (e.g., "change the loop boundary to i < n-1", "add a check for empty input")
+- Do NOT write the corrected code
+
+## 3. Common Pitfall Reminder
+- Mention a related edge case that the user should test after fixing
+
+Keep the response under 300 words. Act like an interviewer giving a hint.
+"""
+        # Call AI using the same infrastructure
+        # Reuse OpenAIClient with custom prompt (temporary solution)
+        # We'll directly call OpenAI API for now
+        import requests
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+        }
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=body,
+                timeout=90,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("output_text", "")
+            if not text:
+                chunks = []
+                for item in data.get("output", []):
+                    for c in item.get("content", []):
+                        if c.get("type") == "output_text":
+                            chunks.append(c.get("text", ""))
+                text = "\n".join(chunks).strip()
+            console.print("[green]AI Feedback:[/green]")
+            console.print(text)
+            # Log the feedback
+            append_log(
+                cfg,
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "action": "ai_feedback",
+                    "slug": args.slug,
+                    "model": model,
+                },
+            )
+        except Exception as e:
+            console.print(f"[red]AI feedback failed: {e}[/red]")
+        return
+
+    if args.command == "ai-interview-eval":
+        if not args.code or not args.slug:
+            raise RuntimeError("Both --code and --slug are required for ai-interview-eval")
+        # Load user code
+        code_path = Path(args.code)
+        if not code_path.exists():
+            raise RuntimeError(f"Code file not found: {code_path}")
+        user_code = code_path.read_text(encoding="utf-8").strip()
+        
+        # Fetch problem detail
+        cookie = os.getenv("LEETCODE_COOKIE", "").strip()
+        if not cookie:
+            raise RuntimeError(tr("未检测到 LEETCODE_COOKIE", "LEETCODE_COOKIE is missing", ui_lang))
+        client = LeetCodeClient(cookie)
+        detail = client.fetch_problem_detail(args.slug)
+        
+        # Prepare AI evaluation prompt based on real interview experiences
+        api_key = (args.api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is missing. Set env or pass --api-key")
+        model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
+        
+        system_prompt = (
+            "You are a senior engineer conducting a technical interview at a top tech company (like Google, Amazon, Meta, Microsoft). "
+            "Evaluate the candidate's solution based on real interview rubrics used by these companies. "
+            "Focus on algorithm correctness, time/space complexity, code readability, edge case handling, and code style. "
+            "Provide a clear PASS/FAIL decision with justification."
+        )
+        user_prompt = f"""
+Problem: {detail.get('translatedTitle') or detail.get('title')}
+Slug: {detail.get('titleSlug')}
+Difficulty: {detail.get('difficulty')}
+Tags: {', '.join([t.get('slug', '') for t in (detail.get('topicTags') or []) if t.get('slug')])}
+
+Problem statement (may contain HTML):
+{detail.get('translatedContent') or detail.get('content') or ''}
+
+User's code:
+```{args.lang or 'python3'}
+{user_code}
+```
+
+Evaluate this solution as if you were a real interviewer at a top tech company. Consider the following dimensions (each 1-5 points):
+1. **Algorithm Correctness**: Does the code solve the problem correctly for all inputs? Are there logical errors?
+2. **Time Complexity**: Is the algorithm optimal? If not, how far from optimal?
+3. **Space Complexity**: Is memory usage optimal? Any unnecessary allocations?
+4. **Code Readability**: Is the code clean, well-structured, and easy to understand?
+5. **Edge Case Handling**: Does the code handle boundary conditions (empty input, large values, etc.)?
+6. **Code Style**: Naming, comments, consistency with language conventions.
+
+Provide your evaluation in the following structured format:
+
+## Interview Evaluation Result
+
+### Overall Decision
+- **PASS** / **FAIL** (choose one)
+
+### Score Summary (1-5 each)
+- Algorithm Correctness: X/5
+- Time Complexity: X/5  
+- Space Complexity: X/5
+- Code Readability: X/5
+- Edge Case Handling: X/5
+- Code Style: X/5
+
+### Detailed Feedback
+- **Strengths**: List 1-3 strong points of the solution.
+- **Weaknesses**: List 1-3 critical issues that would concern an interviewer.
+- **Improvement Suggestions**: Concrete advice to improve the solution.
+
+### Interviewer's Notes
+- Simulate real interview comments: what would you say to the candidate?
+- Would you recommend hiring based on this solution? Why or why not?
+
+Keep the response concise but thorough (around 400-500 words). Base your decision on real interview standards from top companies.
+"""
+        # Call AI using the same infrastructure
+        import requests
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+        }
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=body,
+                timeout=90,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("output_text", "")
+            if not text:
+                chunks = []
+                for item in data.get("output", []):
+                    for c in item.get("content", []):
+                        if c.get("type") == "output_text":
+                            chunks.append(c.get("text", ""))
+                text = "\n".join(chunks).strip()
+            console.print("[green]=== AI Interview Evaluation ===[/green]")
+            console.print(text)
+            # Log the evaluation
+            append_log(
+                cfg,
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "action": "ai_interview_eval",
+                    "slug": args.slug,
+                    "model": model,
+                },
+            )
+        except Exception as e:
+            console.print(f"[red]AI interview evaluation failed: {e}[/red]")
         return
 
     if args.command == "set-ai-budget":
@@ -670,7 +988,7 @@ def main() -> None:
         if maybe_reset_budget_period(budget):
             save_budget(cfg, budget)
         detail = client.fetch_problem_detail(chosen.title_slug)
-        est = estimate_tokens_for_prompt(detail)
+        est = estimate_tokens_for_prompt(detail, compare=args.compare)
         rem = budget_remaining(budget)
         print_budget_summary(budget, ui_lang)
         console.print(
@@ -719,7 +1037,7 @@ def main() -> None:
         detail = client.fetch_problem_detail(chosen.title_slug)
 
         if not args.no_estimate:
-            est = estimate_tokens_for_prompt(detail)
+            est = estimate_tokens_for_prompt(detail, compare=args.compare)
             rem = budget_remaining(budget)
             console.print(
                 tr(
@@ -748,7 +1066,7 @@ def main() -> None:
                     return
 
         ai_client = OpenAIClient(api_key=api_key, model=model)
-        result = ai_client.generate_best_solution(detail, lang=lang)
+        result = ai_client.generate_best_solution(detail, lang=lang, compare=args.compare)
 
         update_budget_after_call(budget, result["input_tokens"], result["output_tokens"])
         save_budget(cfg, budget)

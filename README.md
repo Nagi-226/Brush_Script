@@ -11,6 +11,8 @@
 - 本地兜底模板（`fallback-solve`）
 - **AI 实时兜底参考解（`ai-fallback`）**
 - **调用上限设置防超支（`set-ai-budget`）**
+- **AI 错误驱动反馈（`ai-feedback`）**
+- **模拟大厂技术面试评估（`ai-interview-eval`）**
 - 做题日志（`log`）
 
 ---
@@ -131,6 +133,56 @@ streamlit run app.py
 - 调用前 token 预估 + 变更校验
 - 填筛选条件和题目序号
 - 点击 **One-click Generate AI Best Solution** 一键生成
+
+---
+
+## 模拟大厂技术面试评估（AI 面试官）
+
+基于真实大厂技术面经设计的判定系统，模拟 Google、Amazon、Meta、Microsoft 等公司的面试评分卡，对你的代码进行通过/不通过判定，并提供结构化反馈。
+
+### CLI 命令
+
+```bash
+python main.py ai-interview-eval --slug two-sum --code ./my_solution.py --lang python3
+```
+
+参数说明：
+- `--slug`：题目唯一标识（如 two-sum）
+- `--code`：你的代码文件路径
+- `--lang`：代码语言（python3/cpp/java，默认 python3）
+- `--api-key`：OpenAI API Key（可选，默认使用环境变量）
+- `--model`：模型名称（可选，默认 gpt-5.3）
+
+输出示例：
+```
+=== AI Interview Evaluation ===
+## Interview Evaluation Result
+### Overall Decision
+- **PASS**
+### Score Summary (1-5 each)
+- Algorithm Correctness: 4/5
+- Time Complexity: 5/5  
+...
+```
+
+### Web 界面
+
+在 Web 界面中，找到 **“模拟大厂技术面试评估”** 区域：
+
+1. 输入题目 Slug（如 two-sum）
+2. 选择代码语言
+3. 在文本框中粘贴你的完整代码
+4. 点击 **“运行面试评估”** 按钮
+
+系统将调用 AI 面试官，基于大厂真实面试标准进行多维评估，并给出明确的 PASS/FAIL 决定与详细改进建议。
+
+评估维度：
+- 算法正确性
+- 时间复杂度
+- 空间复杂度
+- 代码可读性
+- 边界情况处理
+- 代码风格
 
 ---
 
