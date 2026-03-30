@@ -800,9 +800,10 @@ Evaluate this solution as if you were a real interviewer at a top tech company. 
 1. **Algorithm Correctness**: Does the code solve the problem correctly for all inputs? Are there logical errors?
 2. **Time Complexity**: Is the algorithm optimal? If not, how far from optimal?
 3. **Space Complexity**: Is memory usage optimal? Any unnecessary allocations?
-4. **Code Readability**: Is the code clean, well-structured, and easy to understand?
+4. **Code Readability**: Is the code clean, well-structured, and easy to understand? Are comments clear (Chinese comments acceptable)?
 5. **Edge Case Handling**: Does the code handle boundary conditions (empty input, large values, etc.)?
 6. **Code Style**: Naming, comments, consistency with language conventions.
+7. **Problem-Solving Communication**: Can the candidate clearly explain the algorithm steps? Are multiple solutions considered and compared?
 
 Provide your evaluation in the following structured format:
 

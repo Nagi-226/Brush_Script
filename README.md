@@ -138,7 +138,7 @@ streamlit run app.py
 
 ## 模拟大厂技术面试评估（AI 面试官）
 
-基于真实大厂技术面经设计的判定系统，模拟 Google、Amazon、Meta、Microsoft 等公司的面试评分卡，对你的代码进行通过/不通过判定，并提供结构化反馈。
+基于真实国内外顶级大厂技术面经设计的判定系统，模拟腾讯、字节跳动、阿里巴巴、华为、Google、Amazon、Meta、Microsoft等公司的面试评分卡，对你的代码进行通过/不通过判定，并提供结构化反馈。特别针对国内大厂面试环境优化，增加解题思路沟通、代码注释规范等评估维度。
 
 ### CLI 命令
 
@@ -162,6 +162,11 @@ python main.py ai-interview-eval --slug two-sum --code ./my_solution.py --lang p
 ### Score Summary (1-5 each)
 - Algorithm Correctness: 4/5
 - Time Complexity: 5/5  
+- Space Complexity: 4/5
+- Code Readability: 4/5
+- Edge Case Handling: 3/5
+- Code Style: 5/5
+- Problem-Solving Communication: 4/5
 ...
 ```
 
@@ -180,9 +185,10 @@ python main.py ai-interview-eval --slug two-sum --code ./my_solution.py --lang p
 - 算法正确性
 - 时间复杂度
 - 空间复杂度
-- 代码可读性
+- 代码可读性（支持中文注释评估）
 - 边界情况处理
 - 代码风格
+- 解题思路与沟通
 
 ---
 
