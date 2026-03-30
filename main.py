@@ -32,14 +32,14 @@ def setup_utf8_output() -> None:
 
 def choose_ui_lang(cli_value: Optional[str]) -> str:
     raw = (cli_value or os.getenv("UI_LANG", "auto")).strip().lower()
-    if raw in {"zh", "en"}:
-        return raw
+    if raw in {"zh", "cn", "en"}:
+        return "zh" if raw == "cn" else raw
     enc = (sys.stdout.encoding or "").lower()
     return "zh" if "utf" in enc else "en"
 
 
 def tr(zh: str, en: str, ui_lang: str) -> str:
-    return zh if ui_lang == "zh" else en
+    return zh if ui_lang in {"zh", "cn"} else en
 
 
 @dataclass
@@ -367,24 +367,74 @@ def budget_file(cfg: Dict[str, Any]) -> Path:
     return Path(cfg["workspace"]["logs_dir"]) / "ai_budget.json"
 
 
-def load_budget(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    path = budget_file(cfg)
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+def _period_start(period: str, now: datetime) -> str:
+    if period == "monthly":
+        return now.strftime("%Y-%m-01")
+    return now.strftime("%Y-%m-%d")
+
+
+def _new_budget_from_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    ai_cfg = cfg.get("ai", {})
+    b_cfg = ai_cfg.get("budget", {})
+    now = datetime.now()
+    reset_period = b_cfg.get("reset_period", "daily")
     return {
-        "max_calls": 20,
-        "max_input_tokens": 200000,
-        "max_output_tokens": 200000,
+        "max_calls": int(b_cfg.get("max_calls", 20)),
+        "max_input_tokens": int(b_cfg.get("max_input_tokens", 200000)),
+        "max_output_tokens": int(b_cfg.get("max_output_tokens", 200000)),
+        "reset_period": reset_period,
+        "period_start": _period_start(reset_period, now),
         "used_calls": 0,
         "used_input_tokens": 0,
         "used_output_tokens": 0,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": now.isoformat(timespec="seconds"),
     }
+
+
+def load_budget(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    path = budget_file(cfg)
+    if path.exists():
+        budget = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        budget = _new_budget_from_config(cfg)
+
+    budget.setdefault("reset_period", cfg.get("ai", {}).get("budget", {}).get("reset_period", "daily"))
+    budget.setdefault("period_start", _period_start(budget["reset_period"], datetime.now()))
+    budget.setdefault("max_calls", int(cfg.get("ai", {}).get("budget", {}).get("max_calls", 20)))
+    budget.setdefault("max_input_tokens", int(cfg.get("ai", {}).get("budget", {}).get("max_input_tokens", 200000)))
+    budget.setdefault("max_output_tokens", int(cfg.get("ai", {}).get("budget", {}).get("max_output_tokens", 200000)))
+    budget.setdefault("used_calls", 0)
+    budget.setdefault("used_input_tokens", 0)
+    budget.setdefault("used_output_tokens", 0)
+
+    maybe_reset_budget_period(budget)
+    return budget
 
 
 def save_budget(cfg: Dict[str, Any], budget: Dict[str, Any]) -> None:
     budget["updated_at"] = datetime.now().isoformat(timespec="seconds")
     budget_file(cfg).write_text(json.dumps(budget, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def maybe_reset_budget_period(budget: Dict[str, Any]) -> bool:
+    now = datetime.now()
+    expected = _period_start(budget.get("reset_period", "daily"), now)
+    if budget.get("period_start") != expected:
+        budget["period_start"] = expected
+        budget["used_calls"] = 0
+        budget["used_input_tokens"] = 0
+        budget["used_output_tokens"] = 0
+        budget["updated_at"] = now.isoformat(timespec="seconds")
+        return True
+    return False
+
+
+def budget_remaining(budget: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "calls": max(0, int(budget["max_calls"]) - int(budget["used_calls"])),
+        "input_tokens": max(0, int(budget["max_input_tokens"]) - int(budget["used_input_tokens"])),
+        "output_tokens": max(0, int(budget["max_output_tokens"]) - int(budget["used_output_tokens"])),
+    }
 
 
 def budget_check(budget: Dict[str, Any]) -> Optional[str]:
@@ -397,10 +447,53 @@ def budget_check(budget: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def estimate_tokens_for_prompt(problem_detail: Dict[str, Any]) -> Dict[str, int]:
+    content = (problem_detail.get("translatedContent") or problem_detail.get("content") or "")
+    samples = (problem_detail.get("sampleTestCase") or "")
+    title = f"{problem_detail.get('title', '')} {problem_detail.get('translatedTitle', '')}"
+    raw_text = f"{title}\n{content}\n{samples}"
+    # rough estimate: 1 token ~= 4 chars for mixed text/code
+    est_input = max(500, len(raw_text) // 4 + 300)
+    est_output = 1600
+    return {"input_tokens": est_input, "output_tokens": est_output}
+
+
 def update_budget_after_call(budget: Dict[str, Any], input_tokens: int, output_tokens: int) -> None:
     budget["used_calls"] += 1
     budget["used_input_tokens"] += input_tokens
     budget["used_output_tokens"] += output_tokens
+
+
+def print_budget_summary(budget: Dict[str, Any], ui_lang: str) -> None:
+    rem = budget_remaining(budget)
+    console.print(
+        tr(
+            f"[cyan]预算窗口: {budget['reset_period']} | 起始: {budget['period_start']}[/cyan]",
+            f"[cyan]Budget window: {budget['reset_period']} | start: {budget['period_start']}[/cyan]",
+            ui_lang,
+        )
+    )
+    console.print(
+        tr(
+            f"[cyan]Calls: {budget['used_calls']}/{budget['max_calls']} (剩余 {rem['calls']})[/cyan]",
+            f"[cyan]Calls: {budget['used_calls']}/{budget['max_calls']} (remaining {rem['calls']})[/cyan]",
+            ui_lang,
+        )
+    )
+    console.print(
+        tr(
+            f"[cyan]Input tokens: {budget['used_input_tokens']}/{budget['max_input_tokens']} (剩余 {rem['input_tokens']})[/cyan]",
+            f"[cyan]Input tokens: {budget['used_input_tokens']}/{budget['max_input_tokens']} (remaining {rem['input_tokens']})[/cyan]",
+            ui_lang,
+        )
+    )
+    console.print(
+        tr(
+            f"[cyan]Output tokens: {budget['used_output_tokens']}/{budget['max_output_tokens']} (剩余 {rem['output_tokens']})[/cyan]",
+            f"[cyan]Output tokens: {budget['used_output_tokens']}/{budget['max_output_tokens']} (remaining {rem['output_tokens']})[/cyan]",
+            ui_lang,
+        )
+    )
 
 
 def write_ai_solution_files(cfg: Dict[str, Any], problem: Problem, ai_markdown: str) -> Dict[str, str]:
@@ -420,7 +513,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LeetCode learning helper")
     parser.add_argument(
         "command",
-        choices=["list", "prepare", "recommend", "fallback-solve", "ai-fallback", "set-ai-budget", "check-auth", "log"],
+        choices=[
+            "list",
+            "prepare",
+            "recommend",
+            "fallback-solve",
+            "ai-fallback",
+            "set-ai-budget",
+            "show-ai-budget",
+            "estimate-ai-fallback",
+            "check-auth",
+            "log",
+        ],
         help="command",
     )
     parser.add_argument("--difficulty", default="")
@@ -439,6 +543,8 @@ def main() -> None:
     parser.add_argument("--max-calls", type=int, default=None)
     parser.add_argument("--max-input-tokens", type=int, default=None)
     parser.add_argument("--max-output-tokens", type=int, default=None)
+    parser.add_argument("--reset-period", default=None, help="budget reset period: daily/monthly")
+    parser.add_argument("--no-estimate", action="store_true", help="skip pre-call token estimate prompt")
     args = parser.parse_args()
 
     ui_lang = choose_ui_lang(args.ui_lang)
@@ -466,9 +572,25 @@ def main() -> None:
             b["max_input_tokens"] = args.max_input_tokens
         if args.max_output_tokens is not None:
             b["max_output_tokens"] = args.max_output_tokens
+        if args.reset_period is not None:
+            period = args.reset_period.strip().lower()
+            if period not in {"daily", "monthly"}:
+                raise ValueError("--reset-period must be daily or monthly")
+            b["reset_period"] = period
+            b["period_start"] = _period_start(period, datetime.now())
+            b["used_calls"] = 0
+            b["used_input_tokens"] = 0
+            b["used_output_tokens"] = 0
         save_budget(cfg, b)
         console.print(tr("[green]AI预算已更新[/green]", "[green]AI budget updated[/green]", ui_lang))
-        console.print(json.dumps(b, ensure_ascii=False, indent=2))
+        print_budget_summary(b, ui_lang)
+        return
+
+    if args.command == "show-ai-budget":
+        b = load_budget(cfg)
+        if maybe_reset_budget_period(b):
+            save_budget(cfg, b)
+        print_budget_summary(b, ui_lang)
         return
 
     cookie = os.getenv("LEETCODE_COOKIE", "").strip()
@@ -543,11 +665,40 @@ def main() -> None:
         append_log(cfg, {"timestamp": datetime.now().isoformat(timespec="seconds"), "action": "fallback_solve", "slug": chosen.title_slug})
         return
 
+    if args.command == "estimate-ai-fallback":
+        budget = load_budget(cfg)
+        if maybe_reset_budget_period(budget):
+            save_budget(cfg, budget)
+        detail = client.fetch_problem_detail(chosen.title_slug)
+        est = estimate_tokens_for_prompt(detail)
+        rem = budget_remaining(budget)
+        print_budget_summary(budget, ui_lang)
+        console.print(
+            tr(
+                f"[cyan]预估本次消耗: input≈{est['input_tokens']} output≈{est['output_tokens']}[/cyan]",
+                f"[cyan]Estimated this call: input≈{est['input_tokens']} output≈{est['output_tokens']}[/cyan]",
+                ui_lang,
+            )
+        )
+        console.print(
+            tr(
+                f"[cyan]调用后预计剩余: calls={max(0, rem['calls']-1)} input={max(0, rem['input_tokens']-est['input_tokens'])} output={max(0, rem['output_tokens']-est['output_tokens'])}[/cyan]",
+                f"[cyan]Estimated remaining after call: calls={max(0, rem['calls']-1)} input={max(0, rem['input_tokens']-est['input_tokens'])} output={max(0, rem['output_tokens']-est['output_tokens'])}[/cyan]",
+                ui_lang,
+            )
+        )
+        return
+
     if args.command == "ai-fallback":
         budget = load_budget(cfg)
+        if maybe_reset_budget_period(budget):
+            save_budget(cfg, budget)
+
         blocked = budget_check(budget)
         if blocked:
             raise RuntimeError(f"AI budget exceeded: {blocked}. Use set-ai-budget to adjust limits.")
+
+        print_budget_summary(budget, ui_lang)
 
         if not args.force:
             ans = console.input(
@@ -566,6 +717,36 @@ def main() -> None:
         model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
 
         detail = client.fetch_problem_detail(chosen.title_slug)
+
+        if not args.no_estimate:
+            est = estimate_tokens_for_prompt(detail)
+            rem = budget_remaining(budget)
+            console.print(
+                tr(
+                    f"[cyan]预估本次消耗: input≈{est['input_tokens']} output≈{est['output_tokens']}[/cyan]",
+                    f"[cyan]Estimated this call: input≈{est['input_tokens']} output≈{est['output_tokens']}[/cyan]",
+                    ui_lang,
+                )
+            )
+            if est["input_tokens"] > rem["input_tokens"] or est["output_tokens"] > rem["output_tokens"] or rem["calls"] < 1:
+                console.print(
+                    tr(
+                        "[yellow]警告：按预估可能超预算。[/yellow]",
+                        "[yellow]Warning: estimate may exceed remaining budget.[/yellow]",
+                        ui_lang,
+                    )
+                )
+            if not args.force:
+                c2 = console.input(
+                    tr(
+                        "是否按该预估继续调用？(y/N): ",
+                        "Proceed with this estimate? (y/N): ",
+                        ui_lang,
+                    )
+                ).strip().lower()
+                if c2 not in {"y", "yes"}:
+                    return
+
         ai_client = OpenAIClient(api_key=api_key, model=model)
         result = ai_client.generate_best_solution(detail, lang=lang)
 
@@ -579,6 +760,7 @@ def main() -> None:
         console.print(
             f"model={result['model']} input_tokens={result['input_tokens']} output_tokens={result['output_tokens']} calls={budget['used_calls']}/{budget['max_calls']}"
         )
+        print_budget_summary(budget, ui_lang)
         append_log(
             cfg,
             {

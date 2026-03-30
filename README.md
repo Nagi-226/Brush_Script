@@ -70,7 +70,54 @@ python main.py ai-fallback --difficulty EASY,MEDIUM --tags array,hash-table --li
 
 ## 一键 AI 参考最优解（Web 按钮界面）
 
-启动界面：
+### Win11 双击启动（方案 B 推荐）
+
+直接双击以下文件，会自动打开浏览器：
+
+- `run_brush_app.bat`
+- `run_brush_app.ps1`
+
+### 方案 A（EXE 打包，下一阶段）
+
+当前已准备好 EXE 构建脚本与启动器：
+
+- `build_exe.ps1`：构建 `.exe`（基于 `BrushScriptApp.spec`）
+- `run_brush_app_exe.bat`：双击后自动构建并启动
+
+执行打包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build_exe.ps1
+```
+
+启动已打包应用：
+
+```bash
+run_brush_app_exe.bat
+```
+
+一键整理最小可分发目录（`release/`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File release.ps1 -Clean
+```
+
+或双击：`release.bat`
+
+`release/` 最小可分发集合：
+- `BrushScriptApp.exe`
+- `_internal/`（运行时依赖，必须）
+- `.env.example`
+- `README.md`
+- `PROJECT_OVERVIEW.md`
+
+如果 PowerShell 被执行策略拦截，可临时允许：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+### 手动启动
 
 ```bash
 streamlit run app.py
@@ -80,6 +127,8 @@ streamlit run app.py
 - 输入 API Key
 - 选择模型
 - 设置预算上限（调用次数/输入 token/输出 token）
+- 实时显示剩余额度（可刷新）
+- 调用前 token 预估 + 变更校验
 - 填筛选条件和题目序号
 - 点击 **One-click Generate AI Best Solution** 一键生成
 
