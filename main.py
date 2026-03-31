@@ -162,10 +162,25 @@ class LeetCodeClient:
         return data.get("userStatus") or {}
 
 
-class OpenAIClient:
-    def __init__(self, api_key: str, model: str):
+class AIClient:
+    def __init__(self, api_key: str, model: str, provider: str = "openai", base_url: str = None):
         self.api_key = api_key
         self.model = model
+        self.provider = provider.lower()
+        self.base_url = base_url
+        
+        # 设置不同供应商的默认基础URL
+        if not self.base_url:
+            if self.provider == "openai":
+                self.base_url = "https://api.openai.com/v1"
+            elif self.provider == "deepseek":
+                self.base_url = "https://api.deepseek.com/v1"
+            elif self.provider == "gemini":
+                self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+            elif self.provider == "claude":
+                self.base_url = "https://api.anthropic.com/v1"
+            else:
+                self.base_url = "https://api.openai.com/v1"  # 默认
 
     def generate_best_solution(self, detail: Dict[str, Any], lang: str, compare: bool = False) -> Dict[str, Any]:
         content = detail.get("translatedContent") or detail.get("content") or ""
@@ -260,47 +275,121 @@ Important:
 - This is study reference, not guaranteed absolute theoretical optimum.
 """
 
-        body = {
-            "model": self.model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": user_prompt}],
-                },
-            ],
-        }
-
-        resp = requests.post(
-            OPENAI_RESPONSES_API,
-            headers={
+        # 根据供应商构建不同的请求
+        if self.provider in ["openai", "deepseek"]:
+            # OpenAI兼容格式
+            body = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 4000
+            }
+            
+            endpoint = f"{self.base_url}/chat/completions"
+            headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
-            },
+            }
+            
+        elif self.provider == "gemini":
+            # Google Gemini格式
+            body = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": system_prompt + "\n\n" + user_prompt}
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0.3,
+                    "maxOutputTokens": 4000,
+                }
+            }
+            
+            endpoint = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
+            headers = {"Content-Type": "application/json"}
+            
+        elif self.provider == "claude":
+            # Anthropic Claude格式
+            body = {
+                "model": self.model,
+                "max_tokens": 4000,
+                "temperature": 0.3,
+                "messages": [
+                    {"role": "user", "content": system_prompt + "\n\n" + user_prompt}
+                ]
+            }
+            
+            endpoint = f"{self.base_url}/messages"
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2025-10-01",  # 更新为支持Claude 4系列的版本
+                "Content-Type": "application/json",
+            }
+            
+        else:
+            # 默认使用OpenAI兼容格式
+            body = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 4000
+            }
+            
+            endpoint = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+
+        resp = requests.post(
+            endpoint,
+            headers=headers,
             json=body,
             timeout=90,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        text = data.get("output_text", "")
-        if not text:
-            chunks: List[str] = []
-            for item in data.get("output", []):
-                for c in item.get("content", []):
-                    if c.get("type") == "output_text":
-                        chunks.append(c.get("text", ""))
-            text = "\n".join(chunks).strip()
+        # 解析不同供应商的响应
+        if self.provider in ["openai", "deepseek"]:
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+            
+        elif self.provider == "gemini":
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            usage = data.get("usageMetadata", {})
+            input_tokens = usage.get("promptTokenCount", 0)
+            output_tokens = usage.get("candidatesTokenCount", 0)
+            
+        elif self.provider == "claude":
+            text = data["content"][0]["text"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            
+        else:
+            # 默认OpenAI兼容格式
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
 
-        usage = data.get("usage", {})
         return {
             "text": text,
-            "input_tokens": int(usage.get("input_tokens", 0) or 0),
-            "output_tokens": int(usage.get("output_tokens", 0) or 0),
-            "model": data.get("model", self.model),
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "model": self.model,
+            "provider": self.provider,
         }
 
 
@@ -621,6 +710,8 @@ def main() -> None:
     parser.add_argument("--slug", default=None, help="problem title slug (e.g., two-sum)")
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--provider", default="openai", help="AI provider: openai, deepseek, gemini, claude, custom")
+    parser.add_argument("--base-url", default=None, help="Custom API base URL")
     parser.add_argument("--max-calls", type=int, default=None)
     parser.add_argument("--max-input-tokens", type=int, default=None)
     parser.add_argument("--max-output-tokens", type=int, default=None)
@@ -770,12 +861,29 @@ Keep the response under 300 words. Act like an interviewer giving a hint.
         client = LeetCodeClient(cookie)
         detail = client.fetch_problem_detail(args.slug)
         
-        # Prepare AI evaluation prompt based on real interview experiences
+        # 获取API配置
         api_key = (args.api_key or os.getenv("OPENAI_API_KEY", "")).strip()
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing. Set env or pass --api-key")
-        model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
+            raise RuntimeError("API Key is missing. Set env or pass --api-key")
         
+        model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
+        provider = args.provider or os.getenv("AI_PROVIDER", "openai")
+        base_url = args.base_url or os.getenv("AI_BASE_URL")
+        
+        # 根据供应商设置环境变量名称
+        if provider == "openai" and not api_key:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        elif provider == "deepseek" and not api_key:
+            api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        elif provider == "gemini" and not api_key:
+            api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        elif provider == "claude" and not api_key:
+            api_key = os.getenv("CLAUDE_API_KEY", "").strip()
+        
+        if not api_key:
+            raise RuntimeError(f"{provider.upper()}_API_KEY is missing. Set env or pass --api-key")
+        
+        # 准备AI评估提示
         system_prompt = (
             "You are a senior engineer conducting a technical interview at a top tech company (like Google, Amazon, Meta, Microsoft). "
             "Evaluate the candidate's solution based on real interview rubrics used by these companies. "
@@ -831,51 +939,101 @@ Provide your evaluation in the following structured format:
 
 Keep the response concise but thorough (around 400-500 words). Base your decision on real interview standards from top companies.
 """
-        # Call AI using the same infrastructure
-        import requests
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        body = {
-            "model": model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": user_prompt}],
-                },
-            ],
-        }
+        # 使用AIClient进行调用
         try:
-            resp = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=body,
-                timeout=90,
-            )
+            ai_client = AIClient(api_key=api_key, model=model, provider=provider, base_url=base_url)
+            
+            # 直接调用API，使用与generate_best_solution相同的逻辑但不同的提示
+            if provider in ["openai", "deepseek"]:
+                body = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000
+                }
+                endpoint = f"{ai_client.base_url}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                
+            elif provider == "gemini":
+                body = {
+                    "contents": [
+                        {
+                            "parts": [
+                                {"text": system_prompt + "\n\n" + user_prompt}
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.3,
+                        "maxOutputTokens": 2000,
+                    }
+                }
+                endpoint = f"{ai_client.base_url}/models/{model}:generateContent?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                
+            elif provider == "claude":
+                body = {
+                    "model": model,
+                    "max_tokens": 2000,
+                    "temperature": 0.3,
+                    "messages": [
+                        {"role": "user", "content": system_prompt + "\n\n" + user_prompt}
+                    ]
+                }
+                endpoint = f"{ai_client.base_url}/messages"
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": "2025-10-01",  # 更新为支持Claude 4系列的版本
+                    "Content-Type": "application/json",
+                }
+                
+            else:
+                body = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000
+                }
+                endpoint = f"{ai_client.base_url}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+
+            resp = requests.post(endpoint, headers=headers, json=body, timeout=90)
             resp.raise_for_status()
             data = resp.json()
-            text = data.get("output_text", "")
-            if not text:
-                chunks = []
-                for item in data.get("output", []):
-                    for c in item.get("content", []):
-                        if c.get("type") == "output_text":
-                            chunks.append(c.get("text", ""))
-                text = "\n".join(chunks).strip()
+
+            # 解析响应
+            if provider in ["openai", "deepseek"]:
+                text = data["choices"][0]["message"]["content"]
+            elif provider == "gemini":
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+            elif provider == "claude":
+                text = data["content"][0]["text"]
+            else:
+                text = data["choices"][0]["message"]["content"]
+
             console.print("[green]=== AI Interview Evaluation ===[/green]")
             console.print(text)
-            # Log the evaluation
+            
+            # 记录评估日志
             append_log(
                 cfg,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
                     "action": "ai_interview_eval",
                     "slug": args.slug,
+                    "provider": provider,
                     "model": model,
                 },
             )
@@ -1030,10 +1188,27 @@ Keep the response concise but thorough (around 400-500 words). Base your decisio
             if ans not in {"y", "yes"}:
                 return
 
+        # 获取API配置
         api_key = (args.api_key or os.getenv("OPENAI_API_KEY", "")).strip()
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing. Set env or pass --api-key")
+            raise RuntimeError("API Key is missing. Set env or pass --api-key")
+        
         model = args.model or os.getenv("OPENAI_MODEL", "gpt-5.3")
+        provider = args.provider or os.getenv("AI_PROVIDER", "openai")
+        base_url = args.base_url or os.getenv("AI_BASE_URL")
+        
+        # 根据供应商设置环境变量名称
+        if provider == "openai" and not api_key:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        elif provider == "deepseek" and not api_key:
+            api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        elif provider == "gemini" and not api_key:
+            api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        elif provider == "claude" and not api_key:
+            api_key = os.getenv("CLAUDE_API_KEY", "").strip()
+        
+        if not api_key:
+            raise RuntimeError(f"{provider.upper()}_API_KEY is missing. Set env or pass --api-key")
 
         detail = client.fetch_problem_detail(chosen.title_slug)
 
@@ -1066,7 +1241,7 @@ Keep the response concise but thorough (around 400-500 words). Base your decisio
                 if c2 not in {"y", "yes"}:
                     return
 
-        ai_client = OpenAIClient(api_key=api_key, model=model)
+        ai_client = AIClient(api_key=api_key, model=model, provider=provider, base_url=base_url)
         result = ai_client.generate_best_solution(detail, lang=lang, compare=args.compare)
 
         update_budget_after_call(budget, result["input_tokens"], result["output_tokens"])
@@ -1077,7 +1252,7 @@ Keep the response concise but thorough (around 400-500 words). Base your decisio
         for k, v in paths.items():
             console.print(f"- {k}: {v}")
         console.print(
-            f"model={result['model']} input_tokens={result['input_tokens']} output_tokens={result['output_tokens']} calls={budget['used_calls']}/{budget['max_calls']}"
+            f"provider={result.get('provider', 'openai')} model={result['model']} input_tokens={result['input_tokens']} output_tokens={result['output_tokens']} calls={budget['used_calls']}/{budget['max_calls']}"
         )
         print_budget_summary(budget, ui_lang)
         append_log(
@@ -1086,6 +1261,7 @@ Keep the response concise but thorough (around 400-500 words). Base your decisio
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "action": "ai_fallback",
                 "slug": chosen.title_slug,
+                "provider": result.get("provider", "openai"),
                 "model": result["model"],
                 "input_tokens": result["input_tokens"],
                 "output_tokens": result["output_tokens"],

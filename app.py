@@ -61,9 +61,123 @@ with st.sidebar:
     st.markdown("---")
     
     # API配置（所有模式共用）
-    st.markdown("## 🔑 " + t("API配置", "API Configuration", "cn"))
-    api_key = st.text_input(t("OpenAI API Key", "OpenAI API Key", ui_lang), type="password", placeholder="sk-...")
-    model = st.text_input(t("模型", "Model", ui_lang), value="gpt-5.3")
+    st.markdown("## 🔑 " + t("AI模型配置", "AI Model Configuration", "cn"))
+    
+    # 模型供应商选择
+    provider_options = {
+        "openai": t("OpenAI", "OpenAI", ui_lang),
+        "deepseek": t("DeepSeek", "DeepSeek", ui_lang),
+        "gemini": t("Google Gemini", "Google Gemini", ui_lang),
+        "claude": t("Anthropic Claude", "Anthropic Claude", ui_lang),
+        "custom": t("自定义API", "Custom API", ui_lang)
+    }
+    
+    provider = st.selectbox(
+        t("选择AI供应商", "Select AI Provider", ui_lang),
+        options=list(provider_options.keys()),
+        format_func=lambda x: provider_options[x],
+        index=0
+    )
+    
+    # 根据供应商显示不同的配置
+    if provider == "openai":
+        api_key = st.text_input(
+            t("OpenAI API Key", "OpenAI API Key", ui_lang), 
+            type="password", 
+            placeholder="sk-...",
+            help=t("从 platform.openai.com 获取", "Get from platform.openai.com", ui_lang)
+        )
+        model = st.selectbox(
+            t("OpenAI模型", "OpenAI Model", ui_lang),
+            ["gpt-5.3", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+            index=0
+        )
+        base_url = "https://api.openai.com/v1"
+        
+    elif provider == "deepseek":
+        api_key = st.text_input(
+            t("DeepSeek API Key", "DeepSeek API Key", ui_lang),
+            type="password",
+            placeholder="sk-...",
+            help=t("从 platform.deepseek.com 获取", "Get from platform.deepseek.com", ui_lang)
+        )
+        model = st.selectbox(
+            t("DeepSeek模型", "DeepSeek Model", ui_lang),
+            ["deepseek-chat", "deepseek-coder", "deepseek-v3.2"],
+            index=2
+        )
+        base_url = "https://api.deepseek.com/v1"
+        
+    elif provider == "gemini":
+        api_key = st.text_input(
+            t("Google API Key", "Google API Key", ui_lang),
+            type="password",
+            placeholder="AIza...",
+            help=t("从 makersuite.google.com 获取", "Get from makersuite.google.com", ui_lang)
+        )
+        model = st.selectbox(
+            t("Gemini模型", "Gemini Model", ui_lang),
+            [
+                "gemini-3.0-pro",  # Gemini 3.0 Pro (最新旗舰)
+                "gemini-3.0-flash",  # Gemini 3.0 Flash (快速版)
+                "gemini-2.0-flash",  # Gemini 2.0 Flash (上一代快速版)
+                "gemini-2.0-pro",  # Gemini 2.0 Pro (上一代专业版)
+                "gemini-1.5-pro",  # Gemini 1.5 Pro (长上下文版)
+                "gemini-1.5-flash"  # Gemini 1.5 Flash (快速长上下文版)
+            ],
+            index=0
+        )
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        
+    elif provider == "claude":
+        api_key = st.text_input(
+            t("Anthropic API Key", "Anthropic API Key", ui_lang),
+            type="password",
+            placeholder="sk-ant-...",
+            help=t("从 console.anthropic.com 获取", "Get from console.anthropic.com", ui_lang)
+        )
+        model = st.selectbox(
+            t("Claude模型", "Claude Model", ui_lang),
+            [
+                "claude-4-opus",  # Claude 4 Opus (最新旗舰)
+                "claude-4-sonnet",  # Claude 4 Sonnet (平衡版)
+                "claude-4-haiku",  # Claude 4 Haiku (快速版)
+                "claude-3-5-sonnet",  # Claude 3.5 Sonnet (上一代旗舰)
+                "claude-3-opus",  # Claude 3 Opus (上一代专业版)
+                "claude-3-haiku"  # Claude 3 Haiku (上一代快速版)
+            ],
+            index=0
+        )
+        base_url = "https://api.anthropic.com/v1"
+        
+    else:  # custom
+        api_key = st.text_input(
+            t("API Key", "API Key", ui_lang),
+            type="password",
+            placeholder="输入API密钥",
+            help=t("自定义API的密钥", "API key for custom provider", ui_lang)
+        )
+        model = st.text_input(
+            t("模型名称", "Model Name", ui_lang),
+            value="custom-model",
+            help=t("自定义模型名称", "Custom model name", ui_lang)
+        )
+        base_url = st.text_input(
+            t("API基础地址", "API Base URL", ui_lang),
+            value="https://api.example.com/v1",
+            help=t("自定义API的基础地址", "Base URL for custom API", ui_lang)
+        )
+    
+    # 保存供应商配置到session状态
+    if "ai_provider" not in st.session_state:
+        st.session_state.ai_provider = provider
+    if "ai_base_url" not in st.session_state:
+        st.session_state.ai_base_url = base_url
+    
+    # 更新session状态
+    if provider != st.session_state.ai_provider:
+        st.session_state.ai_provider = provider
+        st.session_state.ai_base_url = base_url
     
     # 根据模式显示不同的语言选择
     if st.session_state.current_mode == "ai_fallback":
@@ -110,7 +224,7 @@ with st.expander(t("📊 当前预算状态", "📊 Current Budget Status", ui_l
     st.code(run_cmd(["python", "main.py", "show-ai-budget", "--ui-lang", ui_lang]))
 
 # ==================== 模式路由 ====================
-def render_ai_fallback_mode(ui_lang, api_key, model, lang):
+def render_ai_fallback_mode(ui_lang, api_key, model, lang, provider, base_url):
     """渲染AI参考解生成模式"""
     st.markdown("## 🚀 " + t("AI参考解生成", "AI Solution Generator", ui_lang))
     st.caption(t(
@@ -179,6 +293,8 @@ def render_ai_fallback_mode(ui_lang, api_key, model, lang):
                         "python", "main.py", "ai-fallback",
                         "--api-key", api_key.strip(),
                         "--model", model.strip(),
+                        "--provider", provider,
+                        "--base-url", base_url,
                         "--lang", lang,
                         "--difficulty", difficulty.strip(),
                         "--tags", tags.strip(),
@@ -201,7 +317,7 @@ def render_ai_fallback_mode(ui_lang, api_key, model, lang):
                                 st.code(output)
                             st.session_state.estimate_ready = False
 
-def render_interview_eval_mode(ui_lang, api_key, model, eval_lang):
+def render_interview_eval_mode(ui_lang, api_key, model, eval_lang, provider, base_url):
     """渲染模拟面试评估模式"""
     st.markdown("## 👨‍💼 " + t("模拟大厂技术面试评估", "Mock Big Tech Interview Evaluation", ui_lang))
     st.caption(t(
@@ -328,6 +444,8 @@ def render_interview_eval_mode(ui_lang, api_key, model, eval_lang):
                     "--lang", eval_lang_display,
                     "--api-key", api_key.strip(),
                     "--model", model.strip(),
+                    "--provider", provider,
+                    "--base-url", base_url,
                 ]
                 
                 with st.spinner(t("🤔 AI面试官正在评估中...", "🤔 AI interviewer is evaluating...", ui_lang)):
@@ -355,9 +473,9 @@ def render_practice_mode(ui_lang):
 
 # ==================== 根据模式渲染内容 ====================
 if st.session_state.current_mode == "ai_fallback":
-    render_ai_fallback_mode(ui_lang, api_key, model, lang)
+    render_ai_fallback_mode(ui_lang, api_key, model, lang, st.session_state.ai_provider, st.session_state.ai_base_url)
 elif st.session_state.current_mode == "interview_eval":
-    render_interview_eval_mode(ui_lang, api_key, model, eval_lang)
+    render_interview_eval_mode(ui_lang, api_key, model, eval_lang, st.session_state.ai_provider, st.session_state.ai_base_url)
 elif st.session_state.current_mode == "practice_mode":
     render_practice_mode(ui_lang)
 
