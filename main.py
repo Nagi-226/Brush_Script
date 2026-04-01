@@ -392,6 +392,232 @@ Important:
             "provider": self.provider,
         }
 
+    def generate_text(self, system_prompt: str, user_prompt: str, max_output_tokens: int = 2000) -> Dict[str, Any]:
+        if self.provider in ["openai", "deepseek"]:
+            body = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_output_tokens,
+            }
+            endpoint = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+        elif self.provider == "gemini":
+            body = {
+                "contents": [{"parts": [{"text": system_prompt + "\n\n" + user_prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.3,
+                    "maxOutputTokens": max_output_tokens,
+                },
+            }
+            endpoint = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
+            headers = {"Content-Type": "application/json"}
+        elif self.provider == "claude":
+            body = {
+                "model": self.model,
+                "max_tokens": max_output_tokens,
+                "temperature": 0.3,
+                "messages": [{"role": "user", "content": system_prompt + "\n\n" + user_prompt}],
+            }
+            endpoint = f"{self.base_url}/messages"
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2025-10-01",
+                "Content-Type": "application/json",
+            }
+        else:
+            body = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_output_tokens,
+            }
+            endpoint = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+
+        resp = requests.post(endpoint, headers=headers, json=body, timeout=90)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if self.provider in ["openai", "deepseek"]:
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+        elif self.provider == "gemini":
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            usage = data.get("usageMetadata", {})
+            input_tokens = usage.get("promptTokenCount", 0)
+            output_tokens = usage.get("candidatesTokenCount", 0)
+        elif self.provider == "claude":
+            text = data["content"][0]["text"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+        else:
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+
+        return {
+            "text": text,
+            "input_tokens": int(input_tokens),
+            "output_tokens": int(output_tokens),
+            "model": self.model,
+            "provider": self.provider,
+        }
+
+
+def resolve_ai_settings(args: argparse.Namespace) -> Dict[str, str]:
+    provider = (args.provider or os.getenv("AI_PROVIDER", "openai")).strip().lower()
+    model_env_map = {
+        "openai": "OPENAI_MODEL",
+        "deepseek": "DEEPSEEK_MODEL",
+        "gemini": "GEMINI_MODEL",
+        "claude": "CLAUDE_MODEL",
+    }
+    key_env_map = {
+        "openai": "OPENAI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "claude": "CLAUDE_API_KEY",
+    }
+
+    model = (args.model or os.getenv(model_env_map.get(provider, "OPENAI_MODEL"), "gpt-5.3")).strip()
+    api_key = (args.api_key or os.getenv(key_env_map.get(provider, "OPENAI_API_KEY"), "")).strip()
+    base_url = (args.base_url or os.getenv("AI_BASE_URL") or "").strip() or None
+
+    if not api_key:
+        raise RuntimeError(f"{provider.upper()}_API_KEY is missing. Set env or pass --api-key")
+
+    return {
+        "provider": provider,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url or "",
+    }
+
+
+def problem_context(detail: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "title": detail.get("translatedTitle") or detail.get("title") or "",
+        "slug": detail.get("titleSlug") or "",
+        "difficulty": detail.get("difficulty") or "",
+        "tags": ", ".join([t.get("slug", "") for t in (detail.get("topicTags") or []) if t.get("slug")]),
+        "content": detail.get("translatedContent") or detail.get("content") or "",
+        "samples": detail.get("sampleTestCase") or "",
+    }
+
+
+def build_ai_feedback_prompts(detail: Dict[str, Any], user_code: str, lang: str) -> Dict[str, str]:
+    ctx = problem_context(detail)
+    system_prompt = (
+        "You are an algorithm interview coach. The user has written code for a problem but it contains errors. "
+        "Identify the single most important logical issue, give a correction direction, and avoid writing the full final solution."
+    )
+    user_prompt = f"""
+Problem: {ctx['title']}
+Slug: {ctx['slug']}
+Difficulty: {ctx['difficulty']}
+Tags: {ctx['tags']}
+
+Problem statement (may contain HTML):
+{ctx['content']}
+
+User's code:
+```{lang}
+{user_code}
+```
+
+Provide feedback in the following format:
+## 1. Critical Error
+- Identify the single most important logical error
+- Explain why it breaks correctness or misses constraints
+
+## 2. Correction Direction
+- Suggest one concrete next step to fix it
+- Do NOT write the corrected final code
+
+## 3. Common Pitfall Reminder
+- Mention one edge case the user should test after the fix
+
+Keep the response under 300 words. Act like an interviewer giving a strong hint.
+"""
+    return {"system": system_prompt, "user": user_prompt}
+
+
+def build_interview_eval_prompts(detail: Dict[str, Any], user_code: str, lang: str) -> Dict[str, str]:
+    ctx = problem_context(detail)
+    system_prompt = (
+        "You are a senior engineer conducting a technical interview at a top-tier tech company in China and globally. "
+        "Evaluate the candidate using standards common to ByteDance, Tencent, Alibaba, Huawei, Google, Amazon, Meta, and Microsoft. "
+        "Focus on algorithm correctness, complexity, code clarity, edge cases, and communication quality. "
+        "Provide a clear PASS or FAIL with concise justification."
+    )
+    user_prompt = f"""
+Problem: {ctx['title']}
+Slug: {ctx['slug']}
+Difficulty: {ctx['difficulty']}
+Tags: {ctx['tags']}
+
+Problem statement (may contain HTML):
+{ctx['content']}
+
+User's code:
+```{lang}
+{user_code}
+```
+
+Evaluate this solution on the following dimensions (1-5 points each):
+1. Algorithm Correctness
+2. Time Complexity
+3. Space Complexity
+4. Code Readability
+5. Edge Case Handling
+6. Code Style
+7. Problem-Solving Communication
+
+Return markdown in this structure:
+## Interview Evaluation Result
+
+### Overall Decision
+- **PASS** or **FAIL**
+
+### Score Summary (1-5 each)
+- Algorithm Correctness: X/5
+- Time Complexity: X/5
+- Space Complexity: X/5
+- Code Readability: X/5
+- Edge Case Handling: X/5
+- Code Style: X/5
+- Problem-Solving Communication: X/5
+
+### Detailed Feedback
+- **Strengths**: 1-3 concise points
+- **Weaknesses**: 1-3 concise points
+- **Improvement Suggestions**: concrete next actions
+
+### Interviewer's Notes
+- Briefly simulate what the interviewer would say
+- State whether this would support a hire recommendation
+
+Keep the response around 400-500 words.
+"""
+    return {"system": system_prompt, "user": user_prompt}
+
 
 def load_config() -> Dict[str, Any]:
     with open("config.json", "r", encoding="utf-8") as f:
@@ -623,6 +849,12 @@ def estimate_tokens_for_prompt(problem_detail: Dict[str, Any], compare: bool = F
     return {"input_tokens": est_input, "output_tokens": est_output}
 
 
+def estimate_tokens_for_text(system_prompt: str, user_prompt: str, max_output_tokens: int = 2000) -> Dict[str, int]:
+    raw_text = f"{system_prompt}\n{user_prompt}"
+    est_input = max(500, len(raw_text) // 4 + 200)
+    return {"input_tokens": est_input, "output_tokens": max_output_tokens}
+
+
 def update_budget_after_call(budget: Dict[str, Any], input_tokens: int, output_tokens: int) -> None:
     budget["used_calls"] += 1
     budget["used_input_tokens"] += input_tokens
@@ -669,6 +901,12 @@ def write_ai_solution_files(cfg: Dict[str, Any], problem: Problem, ai_markdown: 
     note.write_text(ai_markdown, encoding="utf-8")
     sol.write_text(ai_markdown, encoding="utf-8")
     return {"ai_note": str(note), "ai_solution_markdown": str(sol)}
+
+
+def write_ai_report_file(cfg: Dict[str, Any], problem_slug: str, prefix: str, markdown: str) -> str:
+    report_path = Path(cfg["workspace"]["plans_dir"]) / f"{prefix}_{sanitize_name(problem_slug)}.md"
+    report_path.write_text(markdown, encoding="utf-8")
+    return str(report_path)
 
 
 def main() -> None:
@@ -722,6 +960,134 @@ def main() -> None:
     ui_lang = choose_ui_lang(args.ui_lang)
     cfg = load_config()
     ensure_dirs(cfg)
+
+    if args.command == "ai-feedback":
+        if not args.code or not args.slug:
+            raise RuntimeError("Both --code and --slug are required for ai-feedback")
+        code_path = Path(args.code)
+        if not code_path.exists():
+            raise RuntimeError(f"Code file not found: {code_path}")
+        user_code = code_path.read_text(encoding="utf-8").strip()
+
+        cookie = os.getenv("LEETCODE_COOKIE", "").strip()
+        if not cookie:
+            raise RuntimeError(tr("鏈娴嬪埌 LEETCODE_COOKIE", "LEETCODE_COOKIE is missing", ui_lang))
+        client = LeetCodeClient(cookie)
+        detail = client.fetch_problem_detail(args.slug)
+
+        settings = resolve_ai_settings(args)
+        prompts = build_ai_feedback_prompts(detail, user_code, args.lang or "python3")
+        budget = load_budget(cfg)
+        if maybe_reset_budget_period(budget):
+            save_budget(cfg, budget)
+        blocked = budget_check(budget)
+        if blocked:
+            raise RuntimeError(f"AI budget exceeded: {blocked}. Use set-ai-budget to adjust limits.")
+
+        estimate = estimate_tokens_for_text(prompts["system"], prompts["user"], max_output_tokens=1200)
+        rem = budget_remaining(budget)
+        if (
+            estimate["input_tokens"] > rem["input_tokens"]
+            or estimate["output_tokens"] > rem["output_tokens"]
+            or rem["calls"] < 1
+        ):
+            console.print("[yellow]AI feedback may exceed remaining budget[/yellow]")
+
+        try:
+            ai_client = AIClient(
+                api_key=settings["api_key"],
+                model=settings["model"],
+                provider=settings["provider"],
+                base_url=settings["base_url"] or None,
+            )
+            result = ai_client.generate_text(prompts["system"], prompts["user"], max_output_tokens=1200)
+            update_budget_after_call(budget, result["input_tokens"], result["output_tokens"])
+            save_budget(cfg, budget)
+
+            report_path = write_ai_report_file(cfg, args.slug, "ai_feedback", result["text"])
+            console.print("[green]AI Feedback:[/green]")
+            console.print(result["text"])
+            console.print(f"- report: {report_path}")
+            append_log(
+                cfg,
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "action": "ai_feedback",
+                    "slug": args.slug,
+                    "provider": result["provider"],
+                    "model": result["model"],
+                    "input_tokens": result["input_tokens"],
+                    "output_tokens": result["output_tokens"],
+                    "report_path": report_path,
+                },
+            )
+        except Exception as e:
+            console.print(f"[red]AI feedback failed: {e}[/red]")
+        return
+
+    if args.command == "ai-interview-eval":
+        if not args.code or not args.slug:
+            raise RuntimeError("Both --code and --slug are required for ai-interview-eval")
+        code_path = Path(args.code)
+        if not code_path.exists():
+            raise RuntimeError(f"Code file not found: {code_path}")
+        user_code = code_path.read_text(encoding="utf-8").strip()
+
+        cookie = os.getenv("LEETCODE_COOKIE", "").strip()
+        if not cookie:
+            raise RuntimeError(tr("鏈娴嬪埌 LEETCODE_COOKIE", "LEETCODE_COOKIE is missing", ui_lang))
+        client = LeetCodeClient(cookie)
+        detail = client.fetch_problem_detail(args.slug)
+
+        settings = resolve_ai_settings(args)
+        prompts = build_interview_eval_prompts(detail, user_code, args.lang or "python3")
+        budget = load_budget(cfg)
+        if maybe_reset_budget_period(budget):
+            save_budget(cfg, budget)
+        blocked = budget_check(budget)
+        if blocked:
+            raise RuntimeError(f"AI budget exceeded: {blocked}. Use set-ai-budget to adjust limits.")
+
+        estimate = estimate_tokens_for_text(prompts["system"], prompts["user"], max_output_tokens=2000)
+        rem = budget_remaining(budget)
+        if (
+            estimate["input_tokens"] > rem["input_tokens"]
+            or estimate["output_tokens"] > rem["output_tokens"]
+            or rem["calls"] < 1
+        ):
+            console.print("[yellow]AI interview evaluation may exceed remaining budget[/yellow]")
+
+        try:
+            ai_client = AIClient(
+                api_key=settings["api_key"],
+                model=settings["model"],
+                provider=settings["provider"],
+                base_url=settings["base_url"] or None,
+            )
+            result = ai_client.generate_text(prompts["system"], prompts["user"], max_output_tokens=2000)
+            update_budget_after_call(budget, result["input_tokens"], result["output_tokens"])
+            save_budget(cfg, budget)
+
+            report_path = write_ai_report_file(cfg, args.slug, "ai_interview_eval", result["text"])
+            console.print("[green]=== AI Interview Evaluation ===[/green]")
+            console.print(result["text"])
+            console.print(f"- report: {report_path}")
+            append_log(
+                cfg,
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "action": "ai_interview_eval",
+                    "slug": args.slug,
+                    "provider": result["provider"],
+                    "model": result["model"],
+                    "input_tokens": result["input_tokens"],
+                    "output_tokens": result["output_tokens"],
+                    "report_path": report_path,
+                },
+            )
+        except Exception as e:
+            console.print(f"[red]AI interview evaluation failed: {e}[/red]")
+        return
 
     if args.command == "log":
         path = append_log(
